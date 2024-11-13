@@ -45,8 +45,8 @@ class ParseTableBase(Generic[StateT]):
         tokens = Enumerator()
 
         states = {
-            state: {tokens.get(token): ((1, arg.serialize(memo)) if action is Reduce else (0, arg))
-                    for token, (action, arg) in actions.items()}
+            state: {tokens.get(token): ((1, arg.serialize(memo), ast) if action is Reduce else (0, arg, ast))
+                    for token, (action, arg, ast) in actions.items()}
             for state, actions in self.states.items()
         }
 
@@ -61,8 +61,8 @@ class ParseTableBase(Generic[StateT]):
     def deserialize(cls, data, memo):
         tokens = data['tokens']
         states = {
-            state: {tokens[token]: ((Reduce, Rule.deserialize(arg, memo)) if action==1 else (Shift, arg))
-                    for token, (action, arg) in actions.items()}
+            state: {tokens[token]: ((Reduce, Rule.deserialize(arg, memo), ast) if action==1 else (Shift, arg, ast))
+                    for token, (action, arg, ast) in actions.items()}
             for state, actions in data['states'].items()
         }
         return cls(states, data['start_states'], data['end_states'])
@@ -85,7 +85,7 @@ class IntParseTable(ParseTableBase[int]):
         int_states = {}
 
         for s, la in parse_table.states.items():
-            la = {k:(v[0], state_to_idx[v[1]]) if v[0] is Shift else v
+            la = {k:(v[0], state_to_idx[v[1]], v[2]) if v[0] is Shift else v
                   for k,v in la.items()}
             int_states[ state_to_idx[s] ] = la
 
@@ -268,8 +268,9 @@ class LALR_Analyzer(GrammarAnalyzer):
         m: Dict[LR0ItemSet, Dict[str, Tuple]] = {}
         reduce_reduce = []
         for itemset in self.lr0_itemsets:
-            actions: Dict[Symbol, Tuple] = {la: (Shift, next_state.closure)
+            actions: Dict[Symbol, Tuple] = {la: (Shift, next_state.closure, la.ast)
                                                       for la, next_state in itemset.transitions.items()}
+            
             for la, rules in itemset.lookaheads.items():
                 if len(rules) > 1:
                     # Try to resolve conflict based on priority
@@ -281,7 +282,7 @@ class LALR_Analyzer(GrammarAnalyzer):
                     else:
                         reduce_reduce.append((itemset, la, rules))
                         continue
-
+                
                 rule ,= rules
                 if la in actions:
                     if self.strict:
@@ -293,7 +294,18 @@ class LALR_Analyzer(GrammarAnalyzer):
                         logger.debug('Shift/Reduce conflict for terminal %s: (resolving as shift)', la.name)
                         logger.debug(' * %s', rule)
                 else:
-                    actions[la] = (Reduce, rule)
+                    actions[la] = (Reduce, rule, la.ast)
+
+                msgs = []
+                for la_name, collisions in classify(actions.keys(), lambda la: la.name).items():
+                    if len(collisions) > 1:
+                        msg = 'Conditional lookahead collision in %s between the following rules: %s' % (la_name, ''.join([ '\n\t- ' + str(r) for r in collisions ]))
+                        if self.debug:
+                            msg += '\n    collision occurred in state: {%s\n    }' % ''.join(['\n\t' + str(x) for x in itemset.closure])
+                        msgs.append(msg)
+                if len(msgs) >0:
+                    raise GrammarError('\n\n'.join(msgs))
+
             m[itemset] = { k.name: v for k, v in actions.items() }
 
         if reduce_reduce:

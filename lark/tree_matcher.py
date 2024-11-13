@@ -176,7 +176,7 @@ class TreeMatcher:
 
             # TODO pass callbacks through dict, instead of alias?
             callbacks = {rule: rule.alias for rule in rules}
-            conf = ParserConf(rules, callbacks, [rulename])
+            conf = ParserConf(rules, callbacks, [rulename], None)
             parser = earley.Parser(self.parser.lexer_conf, conf, _match, resolve_ambiguity=True)
             self._parser_cache[rulename] = parser
 

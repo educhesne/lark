@@ -8,6 +8,7 @@ from collections import namedtuple
 from copy import copy, deepcopy
 import pkgutil
 from ast import literal_eval
+import ast
 from contextlib import suppress
 from typing import List, Tuple, Union, Callable, Dict, Optional, Sequence, Generator
 
@@ -17,7 +18,7 @@ from .lexer import Token, TerminalDef, PatternStr, PatternRE, Pattern
 from .parse_tree_builder import ParseTreeBuilder
 from .parser_frontends import ParsingFrontend
 from .common import LexerConf, ParserConf
-from .grammar import RuleOptions, Rule, Terminal, NonTerminal, Symbol, TOKEN_DEFAULT_PRIORITY
+from .grammar import RuleOptions, Rule, Terminal, NonTerminal, SynAttribute, Symbol, TOKEN_DEFAULT_PRIORITY
 from .utils import classify, dedup_list
 from .exceptions import GrammarError, UnexpectedCharacters, UnexpectedToken, ParseError, UnexpectedInput
 
@@ -78,8 +79,10 @@ TERMINALS = {
     '_RPAR': r'\)',
     '_LBRA': r'\[',
     '_RBRA': r'\]',
-    '_LBRACE': r'\{',
-    '_RBRACE': r'\}',
+    '_LBRACE': r'\{(?!\{)',
+    '_RBRACE': r'\}(?!\})',
+    '_LLBRACE': r'\{\{',
+    '_RRBRACE': r'\}\}',
     'OP': '[+*]|[?](?![a-z_])',
     '_COLON': ':',
     '_COMMA': ',',
@@ -103,13 +106,18 @@ TERMINALS = {
     '_DECLARE': r'%declare',
     '_EXTEND': r'%extend',
     '_IMPORT': r'%import',
+    '_PYTHON_HEADER': r'%python_header',
     'NUMBER': r'[+-]?\d+',
+    'ATT_EXPR': r'\{\{[^\n]+\}\}',                                # new terminal for expression defining attributes
+    'PYTHON_CODE': r'\{\{\n(.|\n)+\n\}\}',                        # to make declarations in the header
+    'RULE_INH': r'_?[a-z][_a-z0-9]*\{\{((?!\{\{)[^\n])+\}\}',
+    'CTX_TERMINAL': r'_?[A-Z][_A-Z0-9]*\{\{((?!\{\{)[^\n])+\}\}',
 }
 
 RULES = {
     'start': ['_list'],
     '_list':  ['_item', '_list _item'],
-    '_item':  ['rule', 'term', 'ignore', 'import', 'declare', 'override', 'extend', '_NL'],
+    '_item':  ['rule', 'term', 'ignore', 'import', 'declare', 'override', 'extend', 'python_header', '_NL'],
 
     'rule': ['rule_modifiers RULE template_params priority _COLON expansions _NL'],
     'rule_modifiers': ['RULE_MODIFIERS',
@@ -125,8 +133,10 @@ RULES = {
                     '_expansions _OR alias',
                     '_expansions _NL_OR alias'],
 
-    '?alias':     ['expansion _TO nonterminal', 'expansion'],
+    '?alias':     ['attributed_expansion _TO nonterminal', 'attributed_expansion'],
+    '?attributed_expansion' : ['expansion', 'expansion syn_attribute'],
     'expansion': ['_expansion'],
+    'syn_attribute': ['ATT_EXPR'],
 
     '_expansion': ['', '_expansion expr'],
 
@@ -146,8 +156,8 @@ RULES = {
               'range',
               'template_usage'],
 
-    'terminal': ['TERMINAL'],
-    'nonterminal': ['RULE'],
+    'terminal': ['TERMINAL', 'CTX_TERMINAL'],
+    'nonterminal': ['RULE', 'RULE_INH'],
 
     '?name': ['RULE', 'TERMINAL'],
     '?symbol': ['terminal', 'nonterminal'],
@@ -180,6 +190,7 @@ RULES = {
     '_name_list': ['name', '_name_list _COMMA name'],
 
     '_declare_args': ['symbol', '_declare_args symbol'],
+    'python_header': ['_PYTHON_HEADER PYTHON_CODE'],
     'literal': ['REGEXP', 'STRING'],
 }
 
@@ -429,12 +440,18 @@ class RuleTreeToText(Transformer):
         return x
 
     def expansion(self, symbols):
-        return symbols, None
+        return symbols, None, None
 
     def alias(self, x):
-        (expansion, _alias), alias = x
+        (expansion, _alias, syn_attribute), alias = x
         assert _alias is None, (alias, expansion, '-', _alias)  # Double alias not allowed
-        return expansion, alias.name
+        return expansion, alias.name, syn_attribute
+    
+    def attributed_expansion(self, x):
+        (expansion, alias, _syn_attribute), syn_attribute = x
+        assert _syn_attribute is None, "Synthesized attribute defined outside of attribute_expansion"
+        assert isinstance(syn_attribute, SynAttribute), "Invalid attributed expansion"
+        return expansion, alias, syn_attribute.ast
 
 
 class PrepareAnonTerminals(Transformer_InPlace):
@@ -676,18 +693,95 @@ def nr_deepcopy_tree(t):
     return Transformer_NonRecursive(False).transform(t)
 
 
+class CheckName(ast.NodeVisitor):
+    def __init__(self, name):
+        self.name = name
+        
+    def visit_Name(self, node):
+        assert node.id != self.name, f"Invalid variable {self.name} in attribute expression"
+
+
+class CheckSynSlice(ast.NodeVisitor):
+    def visit_Subscript(self, node):
+        if isinstance(node.value, ast.Name) and node.value.id == 'syn':
+            assert isinstance(node.slice, ast.Constant), "Only constant index are allowed for the stack of attributes"
+
+
+class TransformAttribute(ast.NodeTransformer):
+    def __init__(self, offsets: list[int]):
+        self.offsets = offsets
+   
+    def visit_Name(self, node):
+        if node.id == "inh":
+            inherited_idx = - self.offsets[-1] - 1 if self.offsets else -1
+            return ast.Subscript(value=ast.Name(id='stack', ctx=ast.Load()), 
+                                 slice=ast.Constant(value=inherited_idx), ctx=ast.Load())
+        else:
+            return node
+
+    def visit_Subscript(self, node):
+        if isinstance(node.value, ast.Name) and node.value.id == 'syn':
+            assert self.offsets, "syn used in expression on an empty stack of attributes"
+            assert isinstance(node.slice, ast.Constant), "syn used in expression with a non constant index"
+            assert 1 <= node.slice.value <= len(self.offsets), "syn used in expression outside of the stack of attributes: %s" % ast.unparse(node)
+            new_slice = self.offsets[node.slice.value -1] - (self.offsets[-1] + 1)
+            return ast.Subscript(value=ast.Name(id='stack', ctx=ast.Load()), slice=ast.Constant(value=new_slice), ctx=ast.Load())
+        else:
+            return ast.Subscript(value=self.visit(node.value), slice=self.visit(node.slice), ctx=ast.Load())
+
+
+def transform_expression(expr: Optional[ast.Expression], offsets: list[int]):
+    if expr is None:
+        return None
+    else:
+        CheckName('stack').visit(expr)
+        CheckSynSlice().visit(expr)
+        new_expr = TransformAttribute(offsets).visit(expr)
+        CheckName('syn').visit(new_expr)
+        return new_expr
+
+
+def transform_expansion(expansion, marker_base_name, exp_options):
+    marker_rules = []              # new rules for the marker non-terminals to be added
+    transformed_expansion = []     # expansion with markers inserted
+    offsets = []                   # list of int used to reindex the stack of attributes
+
+    for i, sym in enumerate(expansion):
+        if isinstance(sym, NonTerminal) and sym.ast is not None:
+            nonterminal_marker = NonTerminal(Token("RULE", f"{marker_base_name}#{i}"))
+            new_sym = NonTerminal(sym.name)
+            transformed_expansion.extend([nonterminal_marker, new_sym])
+            new_ast = transform_expression(sym.ast, offsets)
+            rule = Rule(nonterminal_marker, [], i, None, exp_options, new_ast)
+            marker_rules.append(rule)
+        elif isinstance(sym, Terminal) and sym.ast is not None:
+            new_ast = transform_expression(sym.ast, offsets)
+            new_sym = Terminal(sym.name)
+            new_sym.ast = new_ast
+            transformed_expansion.append(new_sym)
+        else:
+            transformed_expansion.append(sym)
+
+        offsets.append(i+1+len(marker_rules))
+
+    return transformed_expansion, marker_rules, offsets
+
+
 class Grammar:
 
     term_defs: List[Tuple[str, Tuple[Tree, int]]]
     rule_defs: List[Tuple[str, Tuple[str, ...], Tree, RuleOptions]]
     ignore: List[str]
+    _python_header: str
 
-    def __init__(self, rule_defs: List[Tuple[str, Tuple[str, ...], Tree, RuleOptions]], term_defs: List[Tuple[str, Tuple[Tree, int]]], ignore: List[str]) -> None:
+    def __init__(self, rule_defs: List[Tuple[str, Tuple[str, ...], Tree, RuleOptions]], 
+                 term_defs: List[Tuple[str, Tuple[Tree, int]]], ignore: List[str], _python_header: str="") -> None:
         self.term_defs = term_defs
         self.rule_defs = rule_defs
         self.ignore = ignore
+        self._python_header = _python_header
 
-    def compile(self, start, terminals_to_keep) -> Tuple[List[TerminalDef], List[Rule], List[str]]:
+    def compile(self, start, terminals_to_keep) -> Tuple[List[TerminalDef], List[Rule], List[str], Optional[ast.Module]]:
         # We change the trees in-place (to support huge grammars)
         # So deepcopy allows calling compile more than once.
         term_defs = [(n, (nr_deepcopy_tree(t), p)) for n, (t, p) in self.term_defs]
@@ -752,7 +846,7 @@ class Grammar:
             simplify_rule.visit(tree)
             expansions = rule_tree_to_text.transform(tree)
 
-            for i, (expansion, alias) in enumerate(expansions):
+            for i, (expansion, alias, syn_attribute) in enumerate(expansions):
                 if alias and name.startswith('_'):
                     raise GrammarError("Rule %s is marked for expansion (it starts with an underscore) and isn't allowed to have aliases (alias=%s)"% (name, alias))
 
@@ -769,8 +863,12 @@ class Grammar:
                     if sym.is_term and exp_options and exp_options.keep_all_tokens:
                         assert isinstance(sym, Terminal)
                         sym.filter_out = False
-                rule = Rule(NonTerminal(name), expansion, i, alias, exp_options)
+
+                marker_expansion, marker_rules, offsets = transform_expansion(expansion, f"{name}#{i}", exp_options)
+                transformed_attribute = transform_expression(syn_attribute, offsets)    
+                rule = Rule(NonTerminal(name), marker_expansion, i, alias, exp_options, transformed_attribute)
                 compiled_rules.append(rule)
+                compiled_rules.extend(marker_rules)
 
         # Remove duplicates of empty rules, throw error for non-empty duplicates
         if len(set(compiled_rules)) != len(compiled_rules):
@@ -780,7 +878,6 @@ class Grammar:
                     if dups[0].expansion:
                         raise GrammarError("Rules defined twice: %s\n\n(Might happen due to colliding expansion of optionals: [] or ?)"
                                            % ''.join('\n  * %s' % i for i in dups))
-
                     # Empty rule; assert all other attributes are equal
                     assert len({(r.alias, r.order, r.options) for r in dups}) == len(dups)
 
@@ -810,7 +907,9 @@ class Grammar:
             if unused:
                 logger.debug("Unused terminals: %s", [t.name for t in unused])
 
-        return terminals, compiled_rules, self.ignore
+        python_header = ast.parse(self._python_header, mode='exec') if self._python_header else None
+
+        return terminals, compiled_rules, self.ignore, python_header
 
 
 PackageResource = namedtuple('PackageResource', 'pkg_name path')
@@ -906,10 +1005,29 @@ def symbol_from_strcase(s):
 @inline_args
 class PrepareGrammar(Transformer_InPlace):
     def terminal(self, name):
-        return Terminal(str(name), filter_out=name.startswith('_'))
+        if name.type == 'CTX_TERMINAL':
+            terminal_name = name.value.split('{{')[0]
+            code = name.value.split('{{')[1][:-2]
+            return Terminal(terminal_name, filter_out=name.startswith('_'), code=code)
+        else:
+            return Terminal(str(name), filter_out=name.startswith('_'))
 
     def nonterminal(self, name):
-        return NonTerminal(name.value)
+        if name.type == 'RULE':
+            return NonTerminal(name.value)
+        elif name.type == 'RULE_INH':
+            nonterminal_name = name.value.split('{{')[0]
+            code = name.value.split('{{')[1][:-2]
+            return NonTerminal(Token('RULE', nonterminal_name), code)
+
+    def syn_attribute(self, *children):
+        assert len(children) <=1, "Invalid synthesized attribute"
+        if len(children) == 0:
+            return SynAttribute("")
+        else:
+            child = children[0]
+            assert isinstance(child, Token) and child.type == "ATT_EXPR", "Invalid token type for synthesized attribute"
+            return SynAttribute(child.value[2:-2])
 
 
 def _find_used_symbols(tree):
@@ -932,7 +1050,7 @@ def _get_parser():
         callback = ParseTreeBuilder(rules, ST).create_callback()
         import re
         lexer_conf = LexerConf(terminals, re, ['WS', 'COMMENT', 'BACKSLASH'])
-        parser_conf = ParserConf(rules, callback, ['start'])
+        parser_conf = ParserConf(rules, callback, ['start'], None)
         lexer_conf.lexer_type = 'basic'
         parser_conf.parser_type = 'lalr'
         _get_parser.cache = ParsingFrontend(lexer_conf, parser_conf, None)
@@ -963,7 +1081,7 @@ def _translate_parser_exception(parse, e):
 
 def _parse_grammar(text, name, start='start'):
     try:
-        tree = _get_parser().parse(text + '\n', start)
+        tree, _ = _get_parser().parse(text + '\n', start)
     except UnexpectedCharacters as e:
         context = e.get_context(text)
         raise GrammarError("Unexpected input at line %d column %d in %s: \n\n%s" %
@@ -1090,6 +1208,7 @@ class GrammarBuilder:
 
     _definitions: Dict[str, Definition]
     _ignore_names: List[str]
+    _python_header: str
 
     def __init__(self, global_keep_all_tokens: bool=False, import_paths: Optional[List[Union[str, Callable]]]=None, used_files: Optional[Dict[str, str]]=None) -> None:
         self.global_keep_all_tokens = global_keep_all_tokens
@@ -1098,6 +1217,7 @@ class GrammarBuilder:
 
         self._definitions: Dict[str, Definition] = {}
         self._ignore_names: List[str] = []
+        self._python_header = ""
 
     def _grammar_error(self, is_term, msg, *names):
         args = {}
@@ -1278,6 +1398,8 @@ class GrammarBuilder:
                     self._define(name, is_term, None)
             elif stmt.data == 'import':
                 pass
+            elif stmt.data == 'python_header':
+                self._python_header = stmt.children[0].value[2:-2].strip()
             else:
                 assert False, stmt
 
@@ -1383,7 +1505,7 @@ class GrammarBuilder:
             else:
                 rule_defs.append((name, params, exp, options))
         # resolve_term_references(term_defs)
-        return Grammar(rule_defs, term_defs, self._ignore_names)
+        return Grammar(rule_defs, term_defs, self._ignore_names, self._python_header)
 
 
 def verify_used_files(file_hashes):
