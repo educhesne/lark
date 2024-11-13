@@ -8,6 +8,7 @@ from typing import (
     TypeVar, Type, List, Dict, Iterator, Callable, Union, Optional, Sequence,
     Tuple, Iterable, IO, Any, TYPE_CHECKING, Collection
 )
+from ast import Module as AstModule
 if TYPE_CHECKING:
     from .parsers.lalr_interactive_parser import InteractiveParser
     from .tree import ParseTree
@@ -263,6 +264,7 @@ class Lark(Serialize):
     lexer: Lexer
     parser: 'ParsingFrontend'
     terminals: Collection[TerminalDef]
+    python_header: Optional[AstModule]
 
     def __init__(self, grammar: 'Union[Grammar, str, IO[str]]', **options) -> None:
         self.options = LarkOptions(options)
@@ -404,7 +406,7 @@ class Lark(Serialize):
             terminals_to_keep = set()
 
         # Compile the EBNF grammar into BNF
-        self.terminals, self.rules, self.ignore_tokens = self.grammar.compile(self.options.start, terminals_to_keep)
+        self.terminals, self.rules, self.ignore_tokens, self.python_header = self.grammar.compile(self.options.start, terminals_to_keep)
 
         if self.options.edit_terminals:
             for t in self.terminals:
@@ -481,7 +483,7 @@ class Lark(Serialize):
     def _build_parser(self) -> "ParsingFrontend":
         self._prepare_callbacks()
         _validate_frontend_args(self.options.parser, self.options.lexer)
-        parser_conf = ParserConf(self.rules, self._callbacks, self.options.start)
+        parser_conf = ParserConf(self.rules, self._callbacks, self.options.start, self.python_header)
         return _construct_parsing_frontend(
             self.options.parser,
             self.options.lexer,

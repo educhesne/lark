@@ -2,6 +2,7 @@ from copy import deepcopy
 import sys
 from types import ModuleType
 from typing import Callable, Collection, Dict, Optional, TYPE_CHECKING, List
+from ast import Module as AstModule
 
 if TYPE_CHECKING:
     from .lark import PostLex
@@ -70,17 +71,19 @@ class LexerConf(Serialize):
         )
 
 class ParserConf(Serialize):
-    __serialize_fields__ = 'rules', 'start', 'parser_type'
+    __serialize_fields__ = 'rules', 'start', 'parser_type', 'python_header'
 
     rules: List['Rule']
     callbacks: ParserCallbacks
     start: List[str]
     parser_type: _ParserArgType
+    python_header: Optional[AstModule]
 
-    def __init__(self, rules: List['Rule'], callbacks: ParserCallbacks, start: List[str]):
+    def __init__(self, rules: List['Rule'], callbacks: ParserCallbacks, start: List[str], python_header: Optional[AstModule]):
         assert isinstance(start, list)
         self.rules = rules
         self.callbacks = callbacks
         self.start = start
+        self.python_header = python_header or None
 
 ###}

@@ -6,7 +6,7 @@ import warnings
 
 from lark.exceptions import UnexpectedToken
 from lark.lexer import Token, LexerThread
-from .lalr_parser_state import ParserState
+from .lalr_parser_state import ParserState, contextual_states
 
 ###{standalone
 
@@ -99,7 +99,10 @@ class InteractiveParser:
 
         Updated by ``feed_token()``.
         """
-        return self.parser_state.parse_conf.parse_table.states[self.parser_state.position]
+        parser_state = self.parser_state
+        ctx_states = contextual_states(parser_state.parse_conf.parse_table.states, parser_state.attribute_stack,
+                                       parser_state.global_vars, parser_state.python_header)
+        return ctx_states[self.parser_state.position]
 
     def accepts(self):
         """Returns the set of possible tokens that will advance the parser into a new valid state."""

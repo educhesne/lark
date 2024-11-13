@@ -3,6 +3,7 @@
 # Author: Erez Shinan (2017)
 # Email : erezshin@gmail.com
 from typing import Dict, Any, Optional
+from ast import Module as AstModule
 from ..lexer import Token, LexerThread
 from ..utils import Serialize
 from ..common import ParserConf, ParserCallbacks
@@ -22,13 +23,13 @@ class LALR_Parser(Serialize):
 
         self._parse_table = analysis.parse_table
         self.parser_conf = parser_conf
-        self.parser = _Parser(analysis.parse_table, callbacks, debug)
+        self.parser = _Parser(analysis.parse_table, callbacks, self.parser_conf.python_header, debug)
 
     @classmethod
     def deserialize(cls, data, memo, callbacks, debug=False):
         inst = cls.__new__(cls)
         inst._parse_table = IntParseTable.deserialize(data, memo)
-        inst.parser = _Parser(inst._parse_table, callbacks, debug)
+        inst.parser = _Parser(inst._parse_table, callbacks, None, debug)
         return inst
 
     def serialize(self, memo: Any = None) -> Dict[str, Any]:
@@ -73,16 +74,19 @@ class LALR_Parser(Serialize):
 class _Parser:
     parse_table: ParseTableBase
     callbacks: ParserCallbacks
+    python_header: Optional[AstModule]
     debug: bool
 
-    def __init__(self, parse_table: ParseTableBase, callbacks: ParserCallbacks, debug: bool=False):
+    def __init__(self, parse_table: ParseTableBase, callbacks: ParserCallbacks, python_header: Optional[AstModule], debug: bool=False):
         self.parse_table = parse_table
         self.callbacks = callbacks
+        self.python_header = python_header
         self.debug = debug
 
-    def parse(self, lexer: LexerThread, start: str, value_stack=None, state_stack=None, start_interactive=False):
-        parse_conf = ParseConf(self.parse_table, self.callbacks, start)
-        parser_state = ParserState(parse_conf, lexer, state_stack, value_stack)
+    def parse(self, lexer: LexerThread, start: str, value_stack=None, state_stack=None, 
+              attribute_stack=None, start_interactive=False):
+        parse_conf = ParseConf(self.parse_table, self.callbacks, start, self.python_header)
+        parser_state = ParserState(parse_conf, lexer, state_stack, value_stack, attribute_stack)
         if start_interactive:
             return InteractiveParser(self, parser_state, parser_state.lexer)
         return self.parse_from_state(parser_state)
