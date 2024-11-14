@@ -82,7 +82,7 @@ class ContextualTransitions(Mapping):
         if re.match(pattern, token.value):
             return self.transitions[token.type]
         else:
-            raise SystemExit(token, ast_pattern, pattern)
+            raise KeyError
 
     def __iter__(self):
         for key in self.transitions.__iter__():
