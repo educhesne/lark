@@ -767,7 +767,7 @@ def transform_expansion(expansion, marker_base_name, exp_options):
 
         elif isinstance(sym, Terminal) and sym.ast is not None:
             # sym is contextual terminal symbol
-            # its ast needs to transformed and reindexed like the other attributes
+            # its ast needs to be transformed and reindexed like the other attributes
             sym.ast = transform_expression(sym.ast, offsets)
             transformed_expansion.append(sym)
         else:

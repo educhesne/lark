@@ -83,7 +83,7 @@ class _Parser:
         self.python_header = python_header
         self.debug = debug
 
-    def parse(self, lexer: LexerThread, start: str, value_stack=None, state_stack=None, 
+    def parse(self, lexer: LexerThread, start: str, value_stack=None, state_stack=None,
               attribute_stack=None, start_interactive=False):
         parse_conf = ParseConf(self.parse_table, self.callbacks, start, self.python_header)
         parser_state = ParserState(parse_conf, lexer, state_stack, value_stack, attribute_stack)
