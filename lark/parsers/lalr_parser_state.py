@@ -3,7 +3,6 @@ from typing import Dict, Any, Generic, List, Optional
 from collections.abc import Mapping
 import re
 from ast import Expression as AstExpression, Module as AstModule, fix_missing_locations
-import ast as lib_ast
 from ..lexer import Token, LexerThread
 from ..common import ParserCallbacks
 
@@ -37,11 +36,13 @@ class ParseConf(Generic[StateT]):
 
 
 class GlobalVariables():
-    "Basic class to collect global variables for the attribute expressions"
+    "Basic class to collect global variables for the attribute ast evaluation"
     pass
 
 
 def eval_attribute(ast: Optional[AstExpression], stack: list, GLOBAL: GlobalVariables, header: Optional[AstModule]) -> Any:
+    # evaluates the ast in a given context; as much as possible prevents side effects by allowing the reference to
+    # only two external variables: GLOBAL, an instance of GlobalVariables, and stack, the current stack of attributes
     globals_dict = dict()
     locals_dict = dict()
     if ast:
@@ -55,21 +56,12 @@ def eval_attribute(ast: Optional[AstExpression], stack: list, GLOBAL: GlobalVari
         return None
 
 
-# class TransformLookahead(lib_ast.NodeTransformer):
-#     def __init__(self, offset: int):
-#         self.offset = offset
-   
-#     def visit_Subscript(self, node):
-#         if isinstance(node.value, lib_ast.Name) and node.value.id == 'stack':
-#             assert isinstance(node.slice, lib_ast.Constant), "stack used in lookahead expression with a non constant index"
-#             old_slice = node.slice.value
-#             new_slice = old_slice - self.offset if old_slice < -1
-#             return lib_ast.Subscript(value=lib_ast.Name(id='stack', ctx=lib_ast.Load()), slice=lib_ast.Constant(value=new_slice), ctx=lib_ast.Load())
-#         else:
-#             return lib_ast.Subscript(value=self.visit(node.value), slice=self.visit(node.slice), ctx=lib_ast.Load())
-
-
 class ContextualTransitions(Mapping):
+    # wrapper class for the transitions of the automaton
+    # when a lookahead is consulted, an optional contextual terminal ast is evaluated in the current state
+    # of the parser; it returns a regex which is matched against the value of the lookahead token
+    # to determine if the transition is admissible
+    # so the transition mapping now takes token as keys, and the existence of an action depends on the token value, not only its name
     transitions: Dict[str, tuple]
     attribute_stack: list
     global_vars: GlobalVariables
@@ -85,13 +77,13 @@ class ContextualTransitions(Mapping):
         _, _, ast_pattern = self.transitions[token.type]
         if ast_pattern is None:
             return self.transitions[token.type]
-        
+
         pattern = self.lookahead_pattern(token.type)
         if re.match(pattern, token.value):
             return self.transitions[token.type]
         else:
             raise SystemExit(token, ast_pattern, pattern)
-            
+
     def __iter__(self):
         for key in self.transitions.__iter__():
             pattern = self.lookahead_pattern(key)
@@ -99,16 +91,23 @@ class ContextualTransitions(Mapping):
 
     def __len__(self):
         return self.transitions.__len__()
-    
+
     def lookahead_pattern(self, token_type: str):
+        # evaluation of the lookahead ast; it returns a regex
         action, _, ast_pattern = self.transitions[token_type]
         if ast_pattern is None:
+            # match anything
             return '(.*?)'
         
+        # avoid side effects by duplicating the global variables accessible in the ast
         attribute_stack, global_vars = deepcopy(self.attribute_stack), deepcopy(self.global_vars)
         if action == Shift:
+            # in this case the ast can be evaluated directly
             pattern = eval_attribute(ast_pattern, attribute_stack, global_vars, self.python_header)
         else:
+            # in case of a reduce action, the ast is meant to be evaluated after the reduction
+            # so we simulated the reduction of the rule and evaluate its synthesized attribute before
+            # evaluating the lookahead ast
             rule = self.transitions[token_type][1]
             size_reduce = len(rule.expansion)
             attribute = eval_attribute(rule.ast, attribute_stack, global_vars, self.python_header)
@@ -169,7 +168,7 @@ class ParserState(Generic[StateT]):
     def feed_token(self, token: Token, is_end=False) -> Any:
         state_stack = self.state_stack
         value_stack = self.value_stack
-        attribute_stack = self.attribute_stack    # the stack of synthesized attributes used in the attribute expression
+        attribute_stack = self.attribute_stack     # the stack of synthesized attributes
         end_state = self.parse_conf.end_state
         callbacks = self.parse_conf.callbacks
         python_header = self.python_header
@@ -191,14 +190,14 @@ class ParserState(Generic[StateT]):
                 assert not is_end
                 state_stack.append(arg)
                 value_stack.append(token if token.type not in callbacks else callbacks[token.type](token))
-                attribute_stack.append(token.value)   # the synthesized attribute of a token is its value
+                attribute_stack.append(token.value)           # the attribute of a token is its value
                 return
             else:
                 # reduce+shift as many times as necessary
                 rule = arg
                 size = len(rule.expansion)
 
-                # the synthesized attribute of a non-terminal is the evaluation of the expression 
+                # the synthesized attribute of a non-terminal symbol is the evaluation of the expression 
                 # attached to the rule deriving it
                 attribute = eval_attribute(rule.ast, attribute_stack, global_vars, python_header)
 

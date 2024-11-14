@@ -106,12 +106,13 @@ TERMINALS = {
     '_DECLARE': r'%declare',
     '_EXTEND': r'%extend',
     '_IMPORT': r'%import',
-    '_PYTHON_HEADER': r'%python_header',
+    '_PYTHON_HEADER': r'%python_header',             
     'NUMBER': r'[+-]?\d+',
-    'ATT_EXPR': r'\{\{[^\n]+\}\}',                                # new terminal for expression defining attributes
-    'PYTHON_CODE': r'\{\{\n(.|\n)+\n\}\}',                        # to make declarations in the header
-    'RULE_INH': r'_?[a-z][_a-z0-9]*\{\{((?!\{\{)[^\n])+\}\}',
-    'CTX_TERMINAL': r'_?[A-Z][_A-Z0-9]*\{\{((?!\{\{)[^\n])+\}\}',
+    ###  these regex are a hacky way to propagate the code of attributes into the symbols definitions  ###
+    'ATT_EXPR': r'\{\{((?!(\{\{|\}\}))[^\n])+\}\}',                       # to match the synthesized attributes
+    'PYTHON_CODE': r'\{\{\n((?!(\{\{|\}\}))(.|\n))+\n\}\}',               # to match the python header
+    'RULE_INH': r'_?[a-z][_a-z0-9]*\{\{((?!(\{\{|\}\}))[^\n])+\}\}',      # to match the inherited attributes
+    'CTX_TERMINAL': r'_?[A-Z][_A-Z0-9]*\{\{((?!(\{\{|\}\}))[^\n])+\}\}',  # to match the contextual terminals
 }
 
 RULES = {
@@ -446,7 +447,7 @@ class RuleTreeToText(Transformer):
         (expansion, _alias, syn_attribute), alias = x
         assert _alias is None, (alias, expansion, '-', _alias)  # Double alias not allowed
         return expansion, alias.name, syn_attribute
-    
+
     def attributed_expansion(self, x):
         (expansion, alias, _syn_attribute), syn_attribute = x
         assert _syn_attribute is None, "Synthesized attribute defined outside of attribute_expansion"
@@ -696,25 +697,19 @@ def nr_deepcopy_tree(t):
 class CheckName(ast.NodeVisitor):
     def __init__(self, name):
         self.name = name
-        
+
     def visit_Name(self, node):
-        assert node.id != self.name, f"Invalid variable {self.name} in attribute expression"
-
-
-class CheckSynSlice(ast.NodeVisitor):
-    def visit_Subscript(self, node):
-        if isinstance(node.value, ast.Name) and node.value.id == 'syn':
-            assert isinstance(node.slice, ast.Constant), "Only constant index are allowed for the stack of attributes"
+        assert node.id != self.name, f"Invalid use of variable {self.name} in attribute expression"
 
 
 class TransformAttribute(ast.NodeTransformer):
     def __init__(self, offsets: list[int]):
         self.offsets = offsets
-   
+
     def visit_Name(self, node):
         if node.id == "inh":
             inherited_idx = - self.offsets[-1] - 1 if self.offsets else -1
-            return ast.Subscript(value=ast.Name(id='stack', ctx=ast.Load()), 
+            return ast.Subscript(value=ast.Name(id='stack', ctx=ast.Load()),
                                  slice=ast.Constant(value=inherited_idx), ctx=ast.Load())
         else:
             return node
@@ -731,37 +726,54 @@ class TransformAttribute(ast.NodeTransformer):
 
 
 def transform_expression(expr: Optional[ast.Expression], offsets: list[int]):
+    # transform the ast of the attributes to replace the 'syn' and 'inh' variables
+    # to make them point to the correct element of 'stack' (name of the stack of attributes 
+    # in the context of evaluation)
     if expr is None:
         return None
     else:
+        # first check that stack is not used
         CheckName('stack').visit(expr)
-        CheckSynSlice().visit(expr)
+        # the actual transformation; offsets is used to reindex correctly the slices
         new_expr = TransformAttribute(offsets).visit(expr)
+        # check no reference to syn is made anymore (in case it was used outside a slice)
         CheckName('syn').visit(new_expr)
         return new_expr
 
 
 def transform_expansion(expansion, marker_base_name, exp_options):
-    marker_rules = []              # new rules for the marker non-terminals to be added
-    transformed_expansion = []     # expansion with markers inserted
-    offsets = []                   # list of int used to reindex the stack of attributes
+    # implement the marker trick: transform inherited attribute (expression attached to non-terminal 
+    # symbols) into the synthesized attribute of a fresh non-terminal deriving to the empty string
+    # cf the dragon book, section 5.5.4
+    marker_rules = []              # new rules for the fresh marker non-terminals
+    transformed_expansion = []     # expansion with the new markers inserted
+    offsets = []                   # list of int, used to reindex the slices of stack attribute in the ast
 
     for i, sym in enumerate(expansion):
         if isinstance(sym, NonTerminal) and sym.ast is not None:
+            # sym is a non-terminal with an inherited attribute
             nonterminal_marker = NonTerminal(Token("RULE", f"{marker_base_name}#{i}"))
-            new_sym = NonTerminal(sym.name)
+            new_sym = NonTerminal(sym.name)    # clean the symbol from its code
+
+            # add the marker right before the existing non-terminal symbol
             transformed_expansion.extend([nonterminal_marker, new_sym])
+
+            # transform the attribute ast based on the 
             new_ast = transform_expression(sym.ast, offsets)
+
+            # add a new rule for the marker non-terminal symbol
             rule = Rule(nonterminal_marker, [], i, None, exp_options, new_ast)
             marker_rules.append(rule)
+
         elif isinstance(sym, Terminal) and sym.ast is not None:
-            new_ast = transform_expression(sym.ast, offsets)
-            new_sym = Terminal(sym.name)
-            new_sym.ast = new_ast
-            transformed_expansion.append(new_sym)
+            # sym is contextual terminal symbol
+            # its ast needs to transformed and reindexed like the other attributes
+            sym.ast = transform_expression(sym.ast, offsets)
+            transformed_expansion.append(sym)
         else:
             transformed_expansion.append(sym)
 
+        # keep track of the new symbols added to the stack by the marker transform
         offsets.append(i+1+len(marker_rules))
 
     return transformed_expansion, marker_rules, offsets
@@ -774,7 +786,7 @@ class Grammar:
     ignore: List[str]
     _python_header: str
 
-    def __init__(self, rule_defs: List[Tuple[str, Tuple[str, ...], Tree, RuleOptions]], 
+    def __init__(self, rule_defs: List[Tuple[str, Tuple[str, ...], Tree, RuleOptions]],
                  term_defs: List[Tuple[str, Tuple[Tree, int]]], ignore: List[str], _python_header: str="") -> None:
         self.term_defs = term_defs
         self.rule_defs = rule_defs
@@ -864,8 +876,9 @@ class Grammar:
                         assert isinstance(sym, Terminal)
                         sym.filter_out = False
 
+                # reindex the attributes ast and apply the marker trick
                 marker_expansion, marker_rules, offsets = transform_expansion(expansion, f"{name}#{i}", exp_options)
-                transformed_attribute = transform_expression(syn_attribute, offsets)    
+                transformed_attribute = transform_expression(syn_attribute, offsets)
                 rule = Rule(NonTerminal(name), marker_expansion, i, alias, exp_options, transformed_attribute)
                 compiled_rules.append(rule)
                 compiled_rules.extend(marker_rules)
@@ -1006,6 +1019,9 @@ def symbol_from_strcase(s):
 class PrepareGrammar(Transformer_InPlace):
     def terminal(self, name):
         if name.type == 'CTX_TERMINAL':
+            # for a contextual terminal symbol, its code is attached to the name of the symbol
+            # the code is enclosed in double braces after the name of the terminal symbol
+            # (hack  to propagate it up to building of the grammar)
             terminal_name = name.value.split('{{')[0]
             code = name.value.split('{{')[1][:-2]
             return Terminal(terminal_name, filter_out=name.startswith('_'), code=code)
@@ -1016,11 +1032,15 @@ class PrepareGrammar(Transformer_InPlace):
         if name.type == 'RULE':
             return NonTerminal(name.value)
         elif name.type == 'RULE_INH':
+            # same here, the code of the inherited attribute is attached 
+            # the name of the symbol
             nonterminal_name = name.value.split('{{')[0]
             code = name.value.split('{{')[1][:-2]
             return NonTerminal(Token('RULE', nonterminal_name), code)
 
     def syn_attribute(self, *children):
+        # for synthesized attributes, the code appears on its own at the end of rule expansion
+        # code is again enclosed in double braces
         assert len(children) <=1, "Invalid synthesized attribute"
         if len(children) == 0:
             return SynAttribute("")

@@ -18,7 +18,7 @@ class Symbol(Serialize):
 
     def __init__(self, name:str , code:str="") -> None:
         self.name = name
-        if code == "":
+        if not code:
             self.ast = None
         else:
             try:
@@ -46,7 +46,7 @@ class Symbol(Serialize):
     fullrepr = property(__repr__)
 
     def renamed(self, f):
-        return type(self)(f(self.name), ast.unparse(self.ast) if self.ast else "") 
+        return type(self)(f(self.name), ast.unparse(self.ast) if self.ast else "")
 
 
 class Terminal(Symbol):
@@ -132,7 +132,7 @@ class Rule(Serialize):
     _hash: int
 
     def __init__(self, origin: NonTerminal, expansion: Sequence[Symbol], order: int=0,
-                alias: Optional[str]=None, options: Optional[RuleOptions]=None, 
+                alias: Optional[str]=None, options: Optional[RuleOptions]=None,
                 ast: Optional[AstExpression]=None):
         self.origin = origin
         self.expansion = expansion
