@@ -66,16 +66,19 @@ class ContextualTransitions(Mapping):
     attribute_stack: list
     global_vars: GlobalVariables
     python_header: Optional[AstModule]
+    ctx_term: bool
 
-    def __init__(self, transitions: Dict[str, tuple], attribute_stack: list, global_vars: GlobalVariables, python_header: Optional[AstModule]):
+    def __init__(self, transitions: Dict[str, tuple], attribute_stack: list, global_vars: GlobalVariables, 
+                 python_header: Optional[AstModule], ctx_term:bool=True):
         self.transitions = transitions
         self.attribute_stack = attribute_stack
         self.global_vars = global_vars
         self.python_header = python_header or None
+        self.ctx_term = ctx_term
 
     def __getitem__(self, token: Token):
         _, _, ast_pattern = self.transitions[token.type]
-        if ast_pattern is None:
+        if ast_pattern is None or not self.ctx_term:
             return self.transitions[token.type]
 
         pattern = self.lookahead_pattern(token.type)
@@ -86,7 +89,7 @@ class ContextualTransitions(Mapping):
 
     def __iter__(self):
         for key in self.transitions.__iter__():
-            pattern = self.lookahead_pattern(key)
+            pattern = self.lookahead_pattern(key) if self.ctx_term else ''
             yield Token(key, pattern)
 
     def __len__(self):
@@ -118,8 +121,8 @@ class ContextualTransitions(Mapping):
 
 
 def contextual_states(states: Dict[StateT, Dict[str, tuple]], attribute_stack: list, global_vars: GlobalVariables,
-                       python_header: Optional[AstModule]):
-    return {k: ContextualTransitions(v, attribute_stack, global_vars, python_header) for k, v in states.items()}
+                       python_header: Optional[AstModule], ctx_term:bool=True):
+    return {k: ContextualTransitions(v, attribute_stack, global_vars, python_header, ctx_term) for k, v in states.items()}
 
 
 class ParserState(Generic[StateT]):
@@ -162,10 +165,11 @@ class ParserState(Generic[StateT]):
             self.lexer, # XXX copy
             copy(self.state_stack),
             deepcopy(self.value_stack) if deepcopy_values else copy(self.value_stack),
-            deepcopy(self.attribute_stack)
+            deepcopy(self.attribute_stack),
+            deepcopy(self.global_vars)
         )
 
-    def feed_token(self, token: Token, is_end=False) -> Any:
+    def feed_token(self, token: Token, is_end=False, ctx_term=True) -> Any:
         state_stack = self.state_stack
         value_stack = self.value_stack
         attribute_stack = self.attribute_stack     # the stack of synthesized attributes
@@ -173,7 +177,9 @@ class ParserState(Generic[StateT]):
         callbacks = self.parse_conf.callbacks
         python_header = self.python_header
         global_vars = self.global_vars
-        states: Mapping[StateT, Mapping[Token, tuple]] = contextual_states(self.parse_conf.states, attribute_stack, global_vars, python_header)
+        states: Mapping[StateT, Mapping[Token, tuple]] = contextual_states(self.parse_conf.states, attribute_stack,
+                                                                           global_vars, python_header, ctx_term)
+
 
         while True:
             state = state_stack[-1]

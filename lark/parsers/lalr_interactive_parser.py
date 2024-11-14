@@ -26,12 +26,12 @@ class InteractiveParser:
         warnings.warn("lexer_state will be removed in subsequent releases. Use lexer_thread instead.", DeprecationWarning)
         return self.lexer_thread
 
-    def feed_token(self, token: Token):
+    def feed_token(self, token: Token, ctx_term:bool=True):
         """Feed the parser with a token, and advance it to the next state, as if it received it from the lexer.
 
         Note that ``token`` has to be an instance of ``Token``.
         """
-        return self.parser_state.feed_token(token, token.type == '$END')
+        return self.parser_state.feed_token(token, token.type == '$END', ctx_term=ctx_term)
 
     def iter_parse(self) -> Iterator[Token]:
         """Step through the different stages of the parse, by reading tokens from the lexer
@@ -114,11 +114,11 @@ class InteractiveParser:
         # and are unnecessarily slow.
         conf_no_callbacks.callbacks = {}
         for t in self.choices():
-            if t.isupper(): # is terminal?
+            if t.type.isupper(): # is terminal?
                 new_cursor = self.copy(deepcopy_values=False)
                 new_cursor.parser_state.parse_conf = conf_no_callbacks
                 try:
-                    new_cursor.feed_token(self.lexer_thread._Token(t, ''))
+                    new_cursor.feed_token(t, ctx_term=False)
                 except UnexpectedToken:
                     pass
                 else:
