@@ -85,8 +85,10 @@ class IntParseTable(ParseTableBase[int]):
         int_states = {}
 
         for s, la in parse_table.states.items():
-            la = {k:(v[0], state_to_idx[v[1]], v[2]) if v[0] is Shift else v
-                  for k,v in la.items()}
+            # in the states table, transitions v are triplets of (action, state, ast)
+            # action is Shift or Reduce, state is the arriving state of the transitions,
+            # ast is the (optional) expression attached to a contextual terminal symbol
+            la = {k:(v[0], state_to_idx[v[1]], v[2]) if v[0] is Shift else v for k,v in la.items()}
             int_states[ state_to_idx[s] ] = la
 
 
@@ -282,7 +284,7 @@ class LALR_Analyzer(GrammarAnalyzer):
                     else:
                         reduce_reduce.append((itemset, la, rules))
                         continue
-                
+
                 rule ,= rules
                 if la in actions:
                     if self.strict:
@@ -294,8 +296,13 @@ class LALR_Analyzer(GrammarAnalyzer):
                         logger.debug('Shift/Reduce conflict for terminal %s: (resolving as shift)', la.name)
                         logger.debug(' * %s', rule)
                 else:
+                    # actions have an optional ast expression for contextual terminal symbols
                     actions[la] = (Reduce, rule, la.ast)
 
+                # because of contextual terminal symbols, we may have terminal symbols which differ
+                # only by the ast expression attached to it; we cannot know if they will match the same token
+                # in the context of parsing, and the possible combinations of collision are too many to test, so 
+                # we prevent them altogether
                 msgs = []
                 for la_name, collisions in classify(actions.keys(), lambda la: la.name).items():
                     if len(collisions) > 1:
