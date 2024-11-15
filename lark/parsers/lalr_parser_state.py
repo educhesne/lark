@@ -6,7 +6,7 @@ from ast import Expression as AstExpression, Module as AstModule, fix_missing_lo
 from ..lexer import Token, LexerThread
 from ..common import ParserCallbacks
 
-from .lalr_analysis import Shift, ParseTableBase, StateT
+from .lalr_analysis import Shift, Reduce, ParseTableBase, StateT
 from lark.exceptions import UnexpectedToken
 
 ###{standalone
@@ -56,29 +56,40 @@ def eval_attribute(ast: Optional[AstExpression], stack: list, GLOBAL: GlobalVari
         return None
 
 
-class ContextualTransitions(Mapping):
+class ContextualTransitions(Mapping[Token, tuple]):
     # wrapper class for the transitions of the automaton
     # when a lookahead is consulted, an optional contextual terminal ast is evaluated in the current state
     # of the parser; it returns a regex which is matched against the value of the lookahead token
     # to determine if the transition is admissible
-    # so the transition mapping now takes token as keys, and the existence of an action depends on the token value, not only its name
+    # so the transition mapping now takes token as keys, and the existence of an action depends on the token value, not only its type
+    # (this all needs to be redesigned)
+
+    __slots__ = ("states", "transitions", "state_stack", "attribute_stack", "global_vars", "python_header", "ctx_term")
+
+    states: Dict
     transitions: Dict[str, tuple]
+    state_stack: list
     attribute_stack: list
     global_vars: GlobalVariables
     python_header: Optional[AstModule]
     ctx_term: bool
 
-    def __init__(self, transitions: Dict[str, tuple], attribute_stack: list, global_vars: GlobalVariables, 
-                 python_header: Optional[AstModule], ctx_term:bool=True):
+    def __init__(self, transitions: Dict[str, tuple], states: Dict[StateT, Dict[str, tuple]], state_stack: list, attribute_stack: list, 
+                 global_vars: GlobalVariables, python_header: Optional[AstModule], ctx_term:bool=True):
+        self.states = states
         self.transitions = transitions
+        self.state_stack = state_stack
         self.attribute_stack = attribute_stack
         self.global_vars = global_vars
         self.python_header = python_header or None
         self.ctx_term = ctx_term
 
     def __getitem__(self, token: Token):
-        _, _, ast_pattern = self.transitions[token.type]
-        if ast_pattern is None or not self.ctx_term:
+        # check the token value against the lookahead pattern only if next action is Shift
+        # otherwise the attribute stack is not yet ready for the evaluation of the contextual terminal ast
+        # (avoids evaluating twice the attributes in the calls to feed_token)
+        action, _, ast_pattern = self.transitions[token.type]
+        if action is Reduce or ast_pattern is None or not self.ctx_term:
             return self.transitions[token.type]
 
         pattern = self.lookahead_pattern(token.type)
@@ -89,40 +100,50 @@ class ContextualTransitions(Mapping):
 
     def __iter__(self):
         for key in self.transitions.__iter__():
-            pattern = self.lookahead_pattern(key) if self.ctx_term else ''
-            yield Token(key, pattern)
+            if not self.ctx_term:
+                yield Token(key, '')
+            pattern = self.lookahead_pattern(key)
+            if pattern:
+                yield Token(key, pattern)
+            else:
+                continue
 
     def __len__(self):
         return self.transitions.__len__()
 
     def lookahead_pattern(self, token_type: str):
-        # evaluation of the lookahead ast; it returns a regex
-        action, _, ast_pattern = self.transitions[token_type]
+        # evaluation of the lookahead ast; simulates Reduce actions if necessary
+        # and returns a regex
+        action, rule, ast_pattern = self.transitions[token_type]
         if ast_pattern is None:
             # match anything
             return '(.*?)'
-        
-        # avoid side effects by duplicating the global variables accessible in the ast
-        attribute_stack, global_vars = deepcopy(self.attribute_stack), deepcopy(self.global_vars)
-        if action == Shift:
-            # in this case the ast can be evaluated directly
-            pattern = eval_attribute(ast_pattern, attribute_stack, global_vars, self.python_header)
-        else:
-            # in case of a reduce action, the ast is meant to be evaluated after the reduction
-            # so we simulated the reduction of the rule and evaluate its synthesized attribute before
-            # evaluating the lookahead ast
-            rule = self.transitions[token_type][1]
-            size_reduce = len(rule.expansion)
+
+        state_stack, attribute_stack, global_vars = deepcopy(self.state_stack), deepcopy(self.attribute_stack), deepcopy(self.global_vars)
+        # the ast_pattern is meant to be evaluated on an attribute stack after all the reduce actions
+        # have occurred
+        # (this is redundant with feed_token; needs refacto)
+        while action != Shift:
+            size = len(rule.expansion)
             attribute = eval_attribute(rule.ast, attribute_stack, global_vars, self.python_header)
-            del attribute_stack[-size_reduce:]
+            if size:
+                del state_stack[-size:]
+                del attribute_stack[-size:]
+
+            _action, new_state, _ = self.states[state_stack[-1]][rule.origin.name]
+            assert _action is Shift
+            state_stack.append(new_state)
             attribute_stack.append(attribute)
-            pattern = eval_attribute(ast_pattern, attribute_stack, global_vars, self.python_header)
+
+            action, rule, _ = self.states[new_state][token_type]
+
+        pattern = eval_attribute(ast_pattern, attribute_stack, global_vars, self.python_header)
         return pattern
 
 
-def contextual_states(states: Dict[StateT, Dict[str, tuple]], attribute_stack: list, global_vars: GlobalVariables,
-                       python_header: Optional[AstModule], ctx_term:bool=True):
-    return {k: ContextualTransitions(v, attribute_stack, global_vars, python_header, ctx_term) for k, v in states.items()}
+def contextual_states(states: Dict[StateT, Dict[str, tuple]], state_stack: list, attribute_stack: list, global_vars: GlobalVariables,
+                       python_header: Optional[AstModule], ctx_term:bool=True) -> Mapping[StateT, Mapping[Token, tuple]]:
+    return {k: ContextualTransitions(v, states, state_stack, attribute_stack, global_vars, python_header, ctx_term) for k, v in states.items()}
 
 
 class ParserState(Generic[StateT]):
@@ -177,8 +198,7 @@ class ParserState(Generic[StateT]):
         callbacks = self.parse_conf.callbacks
         python_header = self.python_header
         global_vars = self.global_vars
-        states: Mapping[StateT, Mapping[Token, tuple]] = contextual_states(self.parse_conf.states, attribute_stack,
-                                                                           global_vars, python_header, ctx_term)
+        states = contextual_states(self.parse_conf.states, state_stack, attribute_stack, global_vars, python_header, ctx_term)
 
 
         while True:
