@@ -102,7 +102,7 @@ class InteractiveParser:
         parser_state = self.parser_state
         # wrap the transition table into an evaluator of contextual terminal token, so the function
         # return the transitions which are admissible in the current context of evaluation
-        ctx_states = contextual_states(parser_state.parse_conf.parse_table.states, parser_state.attribute_stack,
+        ctx_states = contextual_states(parser_state.parse_conf.parse_table.states, parser_state.state_stack, parser_state.attribute_stack,
                                        parser_state.global_vars, parser_state.python_header)
         return ctx_states[self.parser_state.position]
 
