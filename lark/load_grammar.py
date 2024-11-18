@@ -877,7 +877,7 @@ class Grammar:
                         sym.filter_out = False
 
                 # reindex the attributes ast and apply the marker trick
-                marker_expansion, marker_rules, offsets = transform_expansion(expansion, f"{name}#{i}", exp_options)
+                marker_expansion, marker_rules, offsets = transform_expansion(expansion, f"{name if name.startswith('_') else '_'+name}#{i}", exp_options)
                 transformed_attribute = transform_expression(syn_attribute, offsets)
                 rule = Rule(NonTerminal(name), marker_expansion, i, alias, exp_options, transformed_attribute)
                 compiled_rules.append(rule)
