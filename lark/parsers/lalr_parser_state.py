@@ -135,7 +135,10 @@ class ContextualTransitions(Mapping[Token, tuple]):
             state_stack.append(new_state)
             attribute_stack.append(attribute)
 
-            action, rule, _ = self.states[new_state][token_type]
+            try:
+                action, rule, _ = self.states[new_state][token_type]
+            except KeyError:
+                return ''
 
         pattern = eval_attribute(ast_pattern, attribute_stack, global_vars, self.python_header)
         return pattern
