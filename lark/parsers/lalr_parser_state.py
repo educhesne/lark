@@ -93,7 +93,7 @@ class ContextualTransitions(Mapping[Token, tuple]):
             return self.transitions[token.type]
 
         pattern = self.lookahead_pattern(token.type)
-        if re.match(pattern, token.value):
+        if pattern and re.match(pattern, token.value):
             return self.transitions[token.type]
         else:
             raise KeyError
@@ -209,7 +209,7 @@ class ParserState(Generic[StateT]):
             try:
                 action, arg, _ = states[state][token]
             except KeyError:
-                expected = {s for s in states[state].keys() if s.isupper()}
+                expected = {s for s in states[state].keys() if s.type.isupper()}
                 raise UnexpectedToken(token, expected, state=self, interactive_parser=None)
 
             assert arg != end_state
