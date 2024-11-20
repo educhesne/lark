@@ -89,19 +89,17 @@ class ContextualTransitions(Mapping[Token, tuple]):
         # otherwise the attribute stack is not yet ready for the evaluation of the contextual terminal ast
         # (avoids evaluating twice the attributes in the calls to feed_token)
         action, _, ast_pattern = self.transitions[token.type]
-        if action is Reduce or ast_pattern is None or not self.ctx_term:
+        if action is Reduce or ast_pattern is None:
             return self.transitions[token.type]
 
         pattern = self.lookahead_pattern(token.type)
-        if pattern and re.match(pattern, token.value):
+        if pattern and (not self.ctx_term or re.match(pattern, token.value)):
             return self.transitions[token.type]
         else:
             raise KeyError
 
     def __iter__(self):
         for key in self.transitions.__iter__():
-            if not self.ctx_term:
-                yield Token(key, '')
             pattern = self.lookahead_pattern(key)
             if pattern:
                 yield Token(key, pattern)
