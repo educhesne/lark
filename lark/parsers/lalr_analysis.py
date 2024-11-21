@@ -174,6 +174,15 @@ class LALR_Analyzer(GrammarAnalyzer):
             _, unsat = classify_bool(state.closure, lambda rp: rp.is_satisfied)
 
             d = classify(unsat, lambda rp: rp.next)
+
+            msgs = []
+            for _, ctx_term_collision in classify([s for s in d if s.is_term], lambda s: s.name).items():
+                if len(ctx_term_collision) > 1:
+                        msg = 'Contextual lookahead collision between the following rules: %s' %  ''.join([ '\n\t- ' + str(d[s]) for s in ctx_term_collision ])
+                        msgs.append(msg)
+            if len(msgs) >0:
+                raise GrammarError('\n\n'.join(msgs))
+
             for sym, rps in d.items():
                 kernel = fzset({rp.advance(sym) for rp in rps})
                 new_state = cache.get(kernel, None)
@@ -269,10 +278,11 @@ class LALR_Analyzer(GrammarAnalyzer):
     def compute_lalr1_states(self) -> None:
         m: Dict[LR0ItemSet, Dict[str, Tuple]] = {}
         reduce_reduce = []
+
         for itemset in self.lr0_itemsets:
             actions: Dict[Symbol, Tuple] = {la: (Shift, next_state.closure, la.ast)
                                                       for la, next_state in itemset.transitions.items()}
-            
+
             for la, rules in itemset.lookaheads.items():
                 if len(rules) > 1:
                     # Try to resolve conflict based on priority
@@ -298,20 +308,6 @@ class LALR_Analyzer(GrammarAnalyzer):
                 else:
                     # actions have an optional ast expression for contextual terminal symbols
                     actions[la] = (Reduce, rule, la.ast)
-
-                # because of contextual terminal symbols, we may have terminal symbols which differ
-                # only by the ast expression attached to it; we cannot know if they will match the same token
-                # in the context of parsing, and the possible combinations of collision are too many to test, so 
-                # we prevent them altogether
-                msgs = []
-                for la_name, collisions in classify(actions.keys(), lambda la: la.name).items():
-                    if len(collisions) > 1:
-                        msg = 'Conditional lookahead collision in %s between the following rules: %s' % (la_name, ''.join([ '\n\t- ' + str(r) for r in collisions ]))
-                        if self.debug:
-                            msg += '\n    collision occurred in state: {%s\n    }' % ''.join(['\n\t' + str(x) for x in itemset.closure])
-                        msgs.append(msg)
-                if len(msgs) >0:
-                    raise GrammarError('\n\n'.join(msgs))
 
             m[itemset] = { k.name: v for k, v in actions.items() }
 

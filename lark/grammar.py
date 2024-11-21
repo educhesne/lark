@@ -58,6 +58,9 @@ class Terminal(Symbol):
         super().__init__(name, code)
         self.filter_out = filter_out
 
+    def __hash__(self):
+        return hash(f"{self.name}{hash(self.ast)}")
+
     @property
     def fullrepr(self):
         return '%s(%r, %r, %r)' % (type(self).__name__, self.name, self.filter_out, ast.unparse(self.ast) if self.ast else '')
