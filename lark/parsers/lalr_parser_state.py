@@ -74,7 +74,7 @@ class ContextualTransitions(Mapping[Token, tuple]):
     python_header: Optional[AstModule]
     ctx_term: bool
 
-    def __init__(self, transitions: Dict[str, tuple], states: Dict[StateT, Dict[str, tuple]], state_stack: list, attribute_stack: list, 
+    def __init__(self, transitions: Dict[str, tuple], states: Dict[StateT, Dict[str, tuple]], state_stack: list, attribute_stack: list,
                  global_vars: GlobalVariables, python_header: Optional[AstModule], ctx_term:bool=True):
         self.states = states
         self.transitions = transitions
@@ -158,7 +158,7 @@ class ParserState(Generic[StateT]):
     python_header: Optional[AstModule]
     global_vars: GlobalVariables
 
-    def __init__(self, parse_conf: ParseConf[StateT], lexer: LexerThread, state_stack=None, value_stack=None, 
+    def __init__(self, parse_conf: ParseConf[StateT], lexer: LexerThread, state_stack=None, value_stack=None,
                  attribute_stack=None, global_vars=None):
         self.parse_conf = parse_conf
         self.lexer = lexer
@@ -224,7 +224,7 @@ class ParserState(Generic[StateT]):
                 rule = arg
                 size = len(rule.expansion)
 
-                # the synthesized attribute of a non-terminal symbol is the evaluation of the expression 
+                # the synthesized attribute of a non-terminal symbol is the evaluation of the expression
                 # attached to the rule deriving it
                 attribute = eval_attribute(rule.ast, attribute_stack, global_vars, python_header)
 

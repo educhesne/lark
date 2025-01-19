@@ -106,7 +106,7 @@ TERMINALS = {
     '_DECLARE': r'%declare',
     '_EXTEND': r'%extend',
     '_IMPORT': r'%import',
-    '_PYTHON_HEADER': r'%python_header',             
+    '_PYTHON_HEADER': r'%python_header',
     'NUMBER': r'[+-]?\d+',
     ###  these regex are a hacky way to propagate the code of attributes into the symbols definitions  ###
     'ATT_EXPR': r'\{\{((?!(\{\{|\}\}))[^\n])+\}\}',                       # to match the synthesized attributes
@@ -727,7 +727,7 @@ class TransformAttribute(ast.NodeTransformer):
 
 def transform_expression(expr: Optional[ast.Expression], offsets: list[int]):
     # transform the ast of the attributes to replace the 'syn' and 'inh' variables
-    # to make them point to the correct element of 'stack' (name of the stack of attributes 
+    # to make them point to the correct element of 'stack' (name of the stack of attributes
     # in the context of evaluation)
     if expr is None:
         return None
@@ -742,7 +742,7 @@ def transform_expression(expr: Optional[ast.Expression], offsets: list[int]):
 
 
 def transform_expansion(expansion, marker_base_name, exp_options):
-    # implement the marker trick: transform inherited attribute (expression attached to non-terminal 
+    # implement the marker trick: transform inherited attribute (expression attached to non-terminal
     # symbols) into the synthesized attribute of a fresh non-terminal deriving to the empty string
     # cf the dragon book, section 5.5.4
     marker_rules = []              # new rules for the fresh marker non-terminals
@@ -758,7 +758,7 @@ def transform_expansion(expansion, marker_base_name, exp_options):
             # add the marker right before the existing non-terminal symbol
             transformed_expansion.extend([nonterminal_marker, new_sym])
 
-            # transform the attribute ast based on the 
+            # transform the attribute ast based on the
             new_ast = transform_expression(sym.ast, offsets)
 
             # add a new rule for the marker non-terminal symbol
@@ -1032,7 +1032,7 @@ class PrepareGrammar(Transformer_InPlace):
         if name.type == 'RULE':
             return NonTerminal(name.value)
         elif name.type == 'RULE_INH':
-            # same here, the code of the inherited attribute is attached 
+            # same here, the code of the inherited attribute is attached
             # the name of the symbol
             nonterminal_name = name.value.split('{{')[0]
             code = name.value.split('{{')[1][:-2]
